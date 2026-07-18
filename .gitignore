@@ -1,9 +1,28 @@
+# Python
 __pycache__/
 *.pyc
+*.pyo
 .venv/
 venv/
-*.egg-info/
+
+# Environment
 .env
-*.log
+*.env.local
+
+# Extension
+extension/node_modules/
+extension/dist/
+extension/.shopify/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
 .DS_Store
-node_modules/
+Thumbs.db
+
+# Uploads
+static/images/products/
