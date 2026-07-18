@@ -1,0 +1,180 @@
+{% extends "base.html" %}
+{% block content %}
+
+<!-- ─── Top Bar: Table Selector ─── -->
+<div id="topbar">
+    <div id="table-pills">
+        {% for table in tables %}
+        {% set tab = open_tabs.get(table.id) %}
+        {% set total = tab_totals.get(table.id, 0) %}
+        <a href="/?active_table_id={{ table.id }}"
+           class="table-pill {{ 'has-tab' if tab }} {{ 'active' if active_table_id == table.id }}">
+            <span class="pill-name">{{ table.name }}</span>
+            {% if tab and total > 0 %}
+            <span class="pill-total">€{{ '%.0f'|format(total) }}</span>
+            {% elif tab %}
+            <span class="pill-total">open</span>
+            {% endif %}
+        </a>
+        {% endfor %}
+    </div>
+    <div class="topbar-right">
+        <span class="user-name">{{ user.display_name }}</span>
+        <a href="/admin">⚙️</a>
+        <form method="post" action="/logout" style="display:inline">
+            <button type="submit">Exit</button>
+        </form>
+    </div>
+</div>
+
+<!-- ─── Main: Sidebar + Bill ─── -->
+<div id="main">
+    <!-- Sidebar: Categories + Products -->
+    <div id="sidebar">
+        <button id="sidebar-toggle" onclick="toggleSidebar()">▶</button>
+        <div id="sidebar-content">
+            <div id="search-bar">
+                <input type="text" id="search-input" placeholder="🔍 Search products..." oninput="filterProducts(this.value)">
+            </div>
+            {% for cat in categories %}
+            {% set prods = products_by_cat.get(cat.id, []) %}
+            <div class="category {{ 'open' if loop.first }}" data-cat-name="{{ cat.name|lower }}">
+                <div class="category-header" onclick="toggleCategory(this.parentElement)">
+                    <span class="category-icon">{{ cat.icon }}</span>
+                    <span class="category-name">{{ cat.name }}</span>
+                    <span class="category-count">{{ prods|length }}</span>
+                    <span class="category-arrow">▶</span>
+                </div>
+                <div class="product-grid">
+                    {% for product in prods %}
+                    <div class="product-tile" data-product-name="{{ product.name|lower }}"
+                         onclick="addItem({{ active_tab.id if active_tab else 'null' }}, {{ product.id }})">
+                        {% if product.image_path %}
+                        <img src="/static{{ product.image_path }}" alt="{{ product.name }}" loading="lazy">
+                        {% else %}
+                        <div class="no-img">🍽️</div>
+                        {% endif %}
+                        <div class="p-name">{{ product.name }}</div>
+                        <div class="p-price">€{{ '%.2f'|format(product.price) }}</div>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+
+    <!-- Bill Panel -->
+    <div id="bill-panel">
+        {% if active_tab %}
+        <div id="bill-header">
+            <div>
+                <h2>{% set active_table = tables | selectattr('id', 'equalto', active_table_id) | list | first %}{{ active_table.name if active_table else 'Table' }}</h2>
+                <span class="tab-meta">Tab #{{ active_tab.id }} • {{ active_tab_items|length }} items • opened {{ active_tab.opened_at.strftime('%H:%M') }}</span>
+            </div>
+        </div>
+        <div id="bill-content">
+            {% set items = active_tab_items %}
+            {% set total = active_tab_total %}
+            {% set tab_id = active_tab.id %}
+            {% include "partials/bill.html" %}
+        </div>
+        <div id="bill-footer">
+            <div class="total-row">
+                <span class="total-label">Total</span>
+                <span class="total-amount">€{{ '%.2f'|format(active_tab_total) }}</span>
+            </div>
+            <form hx-post="/api/tabs/{{ active_tab.id }}/send-to-shopify" hx-target="#bill-content" hx-swap="innerHTML">
+                <button type="submit" class="btn-shopify" {{ 'disabled' if not active_tab_items }}>
+                    📤 Send to Shopify
+                </button>
+            </form>
+        </div>
+        {% else %}
+        <div id="bill-content">
+            <div class="bill-empty">
+                <div class="empty-icon">👆</div>
+                <p>Select a table from the top bar<br>to start a tab</p>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<script>
+function toggleSidebar() {
+    document.getElementById('sidebar').classList.toggle('collapsed');
+}
+function toggleCategory(cat) {
+    cat.classList.toggle('open');
+}
+function addItem(tabId, productId) {
+    if (!tabId) {
+        alert('Select a table first!');
+        return;
+    }
+    var formData = new FormData();
+    formData.append('product_id', productId);
+    fetch('/api/tabs/' + tabId + '/items', {method:'POST', body: formData})
+        .then(r => r.text())
+        .then(html => {
+            document.getElementById('bill-content').innerHTML = html;
+            // Update total from response
+            var totalEl = html.match(/data-total="([\d.]+)"/);
+            if (totalEl) {
+                var footer = document.querySelector('#bill-footer .total-amount');
+                if (footer) footer.textContent = '\u20ac' + parseFloat(totalEl[1]).toFixed(2);
+            }
+            // Enable send button
+            var btn = document.querySelector('.btn-shopify');
+            if (btn) btn.disabled = false;
+            // Flash animation on tile
+            event.currentTarget.style.background = '#fff8ed';
+            setTimeout(() => event.currentTarget.style.background = '', 200);
+        });
+}
+function updateQty(tabId, itemId, action) {
+    var formData = new FormData();
+    formData.append('action', action);
+    fetch('/api/tabs/' + tabId + '/items/' + itemId, {method:'PUT', body: formData})
+        .then(r => r.text())
+        .then(html => {
+            document.getElementById('bill-content').innerHTML = html;
+            // Update total
+            var totalEl = html.match(/data-total="([\d.]+)"/);
+            var footer = document.querySelector('#bill-footer .total-amount');
+            if (totalEl && footer) {
+                footer.textContent = '\u20ac' + parseFloat(totalEl[1]).toFixed(2);
+            } else if (footer) {
+                footer.textContent = '\u20ac0.00';
+            }
+            // Check if bill is empty
+            if (html.includes('bill-empty') || html.trim() === '') {
+                var btn = document.querySelector('.btn-shopify');
+                if (btn) btn.disabled = true;
+            }
+        });
+}
+function filterProducts(query) {
+    query = query.toLowerCase().trim();
+    var categories = document.querySelectorAll('.category');
+    categories.forEach(function(cat) {
+        var tiles = cat.querySelectorAll('.product-tile');
+        var visible = 0;
+        tiles.forEach(function(tile) {
+            var name = tile.dataset.productName || '';
+            if (name.includes(query)) {
+                tile.style.display = '';
+                visible++;
+            } else {
+                tile.style.display = 'none';
+            }
+        });
+        cat.style.display = visible > 0 ? '' : 'none';
+        if (query && visible > 0) {
+            cat.classList.add('open');
+        }
+    });
+}
+</script>
+{% endblock %}

@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="login-page">
+    <form class="login-card" method="post" action="/login">
+        <div class="logo">🧁</div>
+        <h1>Tab Tracker</h1>
+        <p class="subtitle">Amsterdam Baking Company</p>
+        {% if error %}<p class="error">{{ error }}</p>{% endif %}
+        <input type="text" name="username" placeholder="Username" autocomplete="username" required autofocus>
+        <input type="password" name="password" placeholder="Password" autocomplete="current-password" required>
+        <button type="submit">Sign In</button>
+    </form>
+</div>
+{% endblock %}

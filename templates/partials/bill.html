@@ -1,0 +1,23 @@
+<div data-total="{{ total }}">
+{% if items %}
+{% for item in items %}
+<div class="bill-item">
+    <div class="item-info">
+        <div class="item-name">{{ item.product_name }}</div>
+        <div class="item-price">€{{ '%.2f'|format(item.unit_price) }} each</div>
+    </div>
+    <div class="qty-control">
+        <button class="qty-btn" onclick="updateQty({{ tab_id }}, {{ item.id }}, 'dec')">−</button>
+        <span class="qty-value">{{ item.quantity }}</span>
+        <button class="qty-btn" onclick="updateQty({{ tab_id }}, {{ item.id }}, 'inc')">+</button>
+    </div>
+    <div class="item-total">€{{ '%.2f'|format(item.unit_price * item.quantity) }}</div>
+</div>
+{% endfor %}
+{% else %}
+<div class="bill-empty">
+    <div class="empty-icon">🍽️</div>
+    <p>Tap products from the left<br>to add to this tab</p>
+</div>
+{% endif %}
+</div>

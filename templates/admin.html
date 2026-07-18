@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="admin-page">
+    <a href="/" class="back-link">← Back to Floor</a>
+    <h1>⚙️ Admin Panel</h1>
+
+    {% if request.query_params.get('sync') == 'ok' %}
+    <p style="color:#2e7d32;background:#e8f5e9;padding:10px;border-radius:8px;margin-bottom:16px">✅ Shopify sync completed</p>
+    {% elif request.query_params.get('sync') == 'err' %}
+    <p style="color:#c62828;background:#fbe9e7;padding:10px;border-radius:8px;margin-bottom:16px">❌ Shopify sync failed</p>
+    {% endif %}
+
+    <div class="admin-stats">
+        <div class="stat-card">
+            <div class="stat-value">{{ product_count }}</div>
+            <div class="stat-label">Products</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value">{{ category_count }}</div>
+            <div class="stat-label">Categories</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value">{{ open_tabs_count }}</div>
+            <div class="stat-label">Open Tabs</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value">{{ sent_tabs_count }}</div>
+            <div class="stat-label">Sent to Shopify</div>
+        </div>
+    </div>
+
+    <div class="admin-section">
+        <h2>Shopify Sync</h2>
+        <p style="color:#666;font-size:14px;margin-bottom:12px">
+            Mode: <strong>{{ 'MOCK (no real API calls)' if shopify_mock else 'LIVE' }}</strong><br>
+            Products are synced from Shopify as the canonical source of truth.
+        </p>
+        <form method="post" action="/admin/sync-shopify" style="display:inline">
+            <button type="submit" class="btn-sync">🔄 Sync Products from Shopify</button>
+        </form>
+        {% if sync_logs %}
+        <table class="admin-table" style="margin-top:12px">
+            <thead><tr><th>When</th><th>Added</th><th>Updated</th><th>Unchanged</th><th>Status</th></tr></thead>
+            <tbody>
+                {% for log in sync_logs %}
+                <tr>
+                    <td>{{ log.synced_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                    <td>{{ log.products_added }}</td>
+                    <td>{{ log.products_updated }}</td>
+                    <td>{{ log.products_unchanged }}</td>
+                    <td>{{ log.status }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% endif %}
+    </div>
+
+    <div class="admin-section">
+        <h2>Products ({{ product_count }})</h2>
+        <table class="admin-table">
+            <thead>
+                <tr><th>Img</th><th>Name</th><th>Category</th><th>Price</th><th>Active</th><th>Actions</th></tr>
+            </thead>
+            <tbody>
+                {% for product, category in products_with_cats %}
+                <tr>
+                    <td>
+                        {% if product.image_path %}
+                        <img src="/static{{ product.image_path }}" alt="{{ product.name }}">
+                        {% else %}
+                        <div style="width:36px;height:36px;display:flex;align-items:center;justify-content:center;background:#f0f0f0;border-radius:4px">🍽️</div>
+                        {% endif %}
+                    </td>
+                    <td>{{ product.name }}</td>
+                    <td>{{ category.name if category else '—' }}</td>
+                    <td>
+                        <form method="post" action="/admin/products/{{ product.id }}/price" style="display:inline">
+                            <input type="number" name="price" value="{{ product.price }}" step="0.01" class="price-input" onchange="this.form.submit()">
+                        </form>
+                    </td>
+                    <td>{{ 'Yes' if product.is_active else 'No' }}</td>
+                    <td class="admin-actions">
+                        <form method="post" action="/admin/products/{{ product.id }}/toggle" style="display:inline">
+                            <button type="submit" class="{{ 'btn-toggle-on' if product.is_active else 'btn-toggle-off' }}">
+                                {{ 'Disable' if product.is_active else 'Enable' }}
+                            </button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <div class="admin-section">
+        <h2>Tables</h2>
+        <table class="admin-table">
+            <thead><tr><th>Name</th><th>Seats</th><th>Active</th></tr></thead>
+            <tbody>
+                {% for table in tables %}
+                <tr>
+                    <td>{{ table.name }}</td>
+                    <td>{{ table.seats }}</td>
+                    <td>{{ 'Yes' if table.is_active else 'No' }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        <form method="post" action="/admin/tables/add" style="display:flex;gap:8px;margin-top:12px;align-items:center">
+            <input type="text" name="name" placeholder="Table name" required style="padding:8px;border:1px solid #ddd;border-radius:6px">
+            <input type="number" name="seats" value="4" min="1" max="20" style="width:60px;padding:8px;border:1px solid #ddd;border-radius:6px">
+            <button type="submit" style="padding:8px 16px;border-radius:6px;background:#e89537;color:#fff;font-weight:600">Add Table</button>
+        </form>
+    </div>
+</div>
+{% endblock %}
