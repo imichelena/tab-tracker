@@ -1,0 +1,7 @@
+# Tab Tracker — Shopify App Configuration
+# Used by @shopify/cli to develop, build, and deploy the POS extension.
+# No webhooks, no OAuth redirects — this is a POS-only custom app.
+
+[[extensions]]
+type = "pos_ui_extension"
+path = "extension/"

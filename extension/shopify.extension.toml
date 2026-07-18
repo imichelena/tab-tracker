@@ -1,0 +1,40 @@
+[[extensions]]
+type = "pos_ui_extension"
+name = "Tab Tracker"
+handle = "tab-tracker"
+description = "Table tab management for POS — open tabs, add items by category, send to cart."
+api_version = "2026-07"
+
+[[extensions.targets]]
+target = "pos.home.tile.render"
+module = "./src/index.tsx"
+
+[[extensions.targets]]
+target = "pos.home.modal.render"
+module = "./src/Modal.tsx"
+
+[extensions.capabilities]
+network_access = true
+
+# ── Extension Settings ──
+# These settings are configured by the merchant when installing the extension.
+# They are accessible at runtime via useApi().settings in the POS extension API.
+# Production deployments MUST provide real values. Dev fallbacks exist in Modal.tsx.
+
+[[extensions.settings]]
+key = "backend_url"
+type = "single_line_text_field"
+name = "Backend URL"
+description = "Tab Tracker backend API URL (e.g. https://api.example.com)"
+
+[[extensions.settings]]
+key = "api_key"
+type = "single_line_text_field"
+name = "API Key"
+description = "Tab Tracker backend API key for authentication"
+
+[[extensions.settings]]
+key = "default_terminal_id"
+type = "single_line_text_field"
+name = "Default Terminal ID"
+description = "Default POS terminal identifier for tab operations"

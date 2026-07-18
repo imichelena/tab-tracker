@@ -11,14 +11,18 @@ from fastapi import FastAPI, Request, Depends, HTTPException, Form, Query, Heade
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
+from starlette.middleware.cors import CORSMiddleware
 from sqlalchemy import select, func as sql_func, update, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from config import SECRET_KEY, SESSION_COOKIE_NAME, SHOPIFY_MOCK
+from config import (
+    SECRET_KEY, SESSION_COOKIE_NAME, SHOPIFY_MOCK,
+    TAB_TRACKER_API_KEY, POS_EXTENSION_ORIGIN, CHECKOUT_METHOD, SHOPIFY_SESSION_SECRET,
+)
 import os as _os
 TRANSACTION_API_KEY = _os.environ.get("TRANSACTION_API_KEY", "abc-bakery-analytics-2026")
 from database import get_db, engine, Base
-from models import User, Shop, Table, Category, Product, Tab, TabItem, SyncLog, PriceOverride, Transaction, TransactionItem
+from models import User, Shop, Table, Category, Product, Tab, TabItem, SyncLog, PriceOverride, Transaction, TransactionItem, PosSession
 from auth import hash_password, verify_password, get_current_user
 from shopify import create_draft_order, sync_products
 from jinja import _render
@@ -28,6 +32,13 @@ logger = logging.getLogger("tabtracker")
 
 app = FastAPI(title="Tab Tracker")
 app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY, session_cookie=SESSION_COOKIE_NAME)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[POS_EXTENSION_ORIGIN] if POS_EXTENSION_ORIGIN != "*" else ["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 STATIC_DIR = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -47,6 +58,44 @@ async def require_admin(request: Request, db: AsyncSession = Depends(get_db)) ->
     if not user.get("is_admin"):
         raise HTTPException(status_code=403, detail="Admin access required")
     return user
+
+
+# ─── POS Extension API Auth ───
+
+async def verify_api_key(
+    request: Request,
+    x_api_key: str | None = Header(None, alias="X-API-Key"),
+    x_shop_location: str | None = Header(None, alias="X-Shop-Location"),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Require X-API-Key header on all /api/v1/* endpoints.
+    Returns auth context dict with shop_id resolved from X-Shop-Location."""
+    if not x_api_key or x_api_key != TAB_TRACKER_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+
+    # Resolve shop_id from X-Shop-Location header
+    shop_id = None
+    if x_shop_location:
+        result = await db.execute(
+            select(Shop).where(Shop.shopify_location_id == x_shop_location)
+        )
+        shop = result.scalar_one_or_none()
+        if shop:
+            shop_id = shop.id
+        else:
+            # Fallback: try matching by name or just use the first active shop
+            result = await db.execute(select(Shop).where(Shop.has_tables == True))
+            first_shop = result.scalars().first()
+            if first_shop:
+                shop_id = first_shop.id
+    else:
+        # No location header — use default shop (single shop pilot)
+        result = await db.execute(select(Shop).where(Shop.has_tables == True))
+        first_shop = result.scalars().first()
+        if first_shop:
+            shop_id = first_shop.id
+
+    return {"shop_id": shop_id, "location_id": x_shop_location}
 
 
 # ─── Routes ───
@@ -1236,12 +1285,9 @@ async def history_page(
 @app.get("/api/v1/transactions/{tx_id}")
 async def api_get_transaction(
     tx_id: int,
-    request: Request,
+    auth: dict = Depends(verify_api_key),
     db: AsyncSession = Depends(get_db),
 ):
-    if not await _check_api_key(request):
-        return JSONResponse({"error": "Invalid or missing API key"}, status_code=401)
-
     result = await db.execute(select(Transaction).where(Transaction.id == tx_id))
     tx = result.scalar_one_or_none()
     if not tx:
@@ -1265,6 +1311,9 @@ async def api_get_transaction(
         "item_count": tx.item_count,
         "status": tx.shopify_status,
         "shopify_draft_order_id": tx.shopify_draft_order_id,
+        "pos_order_id": tx.pos_order_id,
+        "pos_terminal_id": tx.pos_terminal_id,
+        "checkout_method": tx.checkout_method,
         "opened_at": tx.opened_at.isoformat() if tx.opened_at else None,
         "sent_at": tx.sent_at.isoformat() if tx.sent_at else None,
         "completed_at": tx.completed_at.isoformat() if tx.completed_at else None,
@@ -1282,7 +1331,7 @@ async def api_get_transaction(
 
 @app.get("/api/v1/transactions")
 async def api_list_transactions(
-    request: Request,
+    auth: dict = Depends(verify_api_key),
     db: AsyncSession = Depends(get_db),
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=500),
@@ -1290,10 +1339,8 @@ async def api_list_transactions(
     to_date: str = Query(None),
     status: str = Query(None),
     table_id: int = Query(None),
+    checkout_method: str = Query(None),
 ):
-    if not await _check_api_key(request):
-        return JSONResponse({"error": "Invalid or missing API key"}, status_code=401)
-
     offset = (page - 1) * per_page
     conditions = []
     if from_date:
@@ -1306,6 +1353,8 @@ async def api_list_transactions(
         conditions.append(Transaction.shopify_status == status)
     if table_id:
         conditions.append(Transaction.table_id == table_id)
+    if checkout_method:
+        conditions.append(Transaction.checkout_method == checkout_method)
 
     # Count
     count_q = select(sql_func.count()).select_from(Transaction)
@@ -1339,6 +1388,9 @@ async def api_list_transactions(
             "item_count": tx.item_count,
             "status": tx.shopify_status,
             "shopify_draft_order_id": tx.shopify_draft_order_id,
+            "pos_order_id": tx.pos_order_id,
+            "pos_terminal_id": tx.pos_terminal_id,
+            "checkout_method": tx.checkout_method,
             "opened_at": tx.opened_at.isoformat() if tx.opened_at else None,
             "sent_at": tx.sent_at.isoformat() if tx.sent_at else None,
             "completed_at": tx.completed_at.isoformat() if tx.completed_at else None,
@@ -1437,6 +1489,638 @@ async def export_csv(
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=transactions_export.csv"},
     )
+
+
+# ═══════════════════════════════════════════════════
+# POS Extension API — /api/v1/* endpoints
+# All protected by verify_api_key dependency.
+# ═══════════════════════════════════════════════════
+
+from pydantic import BaseModel
+
+# ─── Request schemas ───
+
+class OpenTabRequest(BaseModel):
+    table_id: int
+    pos_terminal_id: str | None = None
+    staff_id: str | None = None
+    guests: int = 1
+    notes: str | None = None
+
+class AddItemRequest(BaseModel):
+    product_id: int
+
+class UpdateItemQtyRequest(BaseModel):
+    quantity: int
+
+class CloseTabRequest(BaseModel):
+    pos_terminal_id: str | None = None
+    staff_id: str | None = None
+
+
+# ─── Products ───
+
+@app.get("/api/v1/products")
+async def api_v1_products(
+    auth: dict = Depends(verify_api_key),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return all active products with category name and active price override info."""
+    result = await db.execute(
+        select(Product, Category)
+        .outerjoin(Category, Product.category_id == Category.id)
+        .where(Product.is_active == True)
+        .order_by(Category.sort_order, Product.sort_order, Product.name)
+    )
+    rows = result.all()
+
+    # Load active price overrides
+    ov_result = await db.execute(
+        select(PriceOverride).where(PriceOverride.is_active == True)
+    )
+    overrides = {o.product_id: o for o in ov_result.scalars().all()}
+
+    products = []
+    for product, category in rows:
+        ov = overrides.get(product.id)
+        products.append({
+            "id": product.id,
+            "name": product.name,
+            "slug": product.slug,
+            "price": float(product.price),
+            "currency": product.currency,
+            "category_id": product.category_id,
+            "category_name": category.name if category else None,
+            "shopify_variant_id": product.shopify_variant_id,
+            "shopify_product_id": product.shopify_product_id,
+            "image_path": product.image_path,
+            "override_price": float(ov.override_price) if ov else None,
+            "is_active": product.is_active,
+        })
+
+    return JSONResponse(products)
+
+
+@app.get("/api/v1/categories")
+async def api_v1_categories(
+    auth: dict = Depends(verify_api_key),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return all active categories ordered by sort_order."""
+    result = await db.execute(
+        select(Category)
+        .where(Category.is_active == True)
+        .order_by(Category.sort_order, Category.name)
+    )
+    categories = result.scalars().all()
+
+    return JSONResponse([
+        {
+            "id": cat.id,
+            "name": cat.name,
+            "icon": cat.icon,
+            "sort_order": cat.sort_order,
+            "is_active": cat.is_active,
+        }
+        for cat in categories
+    ])
+
+
+# ─── Tables ───
+
+@app.get("/api/v1/tables")
+async def api_v1_tables(
+    auth: dict = Depends(verify_api_key),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return all active tables for the current shop."""
+    shop_id = auth.get("shop_id")
+    if not shop_id:
+        return JSONResponse([])
+
+    result = await db.execute(
+        select(Table)
+        .where(Table.shop_id == shop_id, Table.is_active == True)
+        .order_by(Table.sort_order, Table.name)
+    )
+    tables = result.scalars().all()
+
+    return JSONResponse([
+        {
+            "id": t.id,
+            "name": t.name,
+            "seats": t.seats,
+            "sort_order": t.sort_order,
+            "is_active": t.is_active,
+        }
+        for t in tables
+    ])
+
+
+# ─── Tabs CRUD ───
+
+@app.get("/api/v1/tabs/open")
+async def api_v1_tabs_open(
+    auth: dict = Depends(verify_api_key),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return all open tabs across all tables."""
+    shop_id = auth.get("shop_id")
+    if not shop_id:
+        return JSONResponse([])
+
+    result = await db.execute(
+        select(Tab, Table)
+        .join(Table, Tab.table_id == Table.id)
+        .where(Tab.shop_id == shop_id, Tab.status == "open")
+        .order_by(Tab.opened_at.desc())
+    )
+    rows = result.all()
+
+    results = []
+    for tab, table in rows:
+        items_res = await db.execute(
+            select(TabItem).where(TabItem.tab_id == tab.id).order_by(TabItem.added_at)
+        )
+        items = items_res.scalars().all()
+        total = sum(float(i.unit_price) * i.quantity for i in items)
+        item_count = sum(i.quantity for i in items)
+
+        results.append({
+            "id": tab.id,
+            "table_id": tab.table_id,
+            "table_name": table.name,
+            "status": tab.status,
+            "guests": tab.guests,
+            "item_count": item_count,
+            "total": round(total, 2),
+            "opened_at": tab.opened_at.isoformat() if tab.opened_at else None,
+            "notes": tab.notes,
+            "items": [
+                {
+                    "id": i.id,
+                    "product_id": i.product_id,
+                    "product_name": i.product_name,
+                    "unit_price": float(i.unit_price),
+                    "quantity": i.quantity,
+                    "added_at": i.added_at.isoformat() if i.added_at else None,
+                }
+                for i in items
+            ],
+        })
+
+    return JSONResponse(results)
+
+
+@app.get("/api/v1/tabs")
+async def api_v1_get_tab(
+    table_id: int = Query(...),
+    auth: dict = Depends(verify_api_key),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return the open tab + items for a specific table."""
+    shop_id = auth.get("shop_id")
+    if not shop_id:
+        return JSONResponse({"error": "No shop configured"}, status_code=400)
+
+    result = await db.execute(
+        select(Tab)
+        .where(Tab.table_id == table_id, Tab.shop_id == shop_id, Tab.status == "open")
+    )
+    tab = result.scalar_one_or_none()
+    if not tab:
+        return JSONResponse({"tab": None, "items": []})
+
+    items_res = await db.execute(
+        select(TabItem).where(TabItem.tab_id == tab.id).order_by(TabItem.added_at)
+    )
+    items = items_res.scalars().all()
+    total = sum(float(i.unit_price) * i.quantity for i in items)
+
+    return JSONResponse({
+        "tab": {
+            "id": tab.id,
+            "table_id": tab.table_id,
+            "status": tab.status,
+            "guests": tab.guests,
+            "opened_at": tab.opened_at.isoformat() if tab.opened_at else None,
+            "closed_at": tab.closed_at.isoformat() if tab.closed_at else None,
+            "pos_cart_sent_at": tab.pos_cart_sent_at.isoformat() if tab.pos_cart_sent_at else None,
+            "pos_terminal_id": tab.pos_terminal_id,
+            "notes": tab.notes,
+        },
+        "items": [
+            {
+                "id": i.id,
+                "product_id": i.product_id,
+                "product_name": i.product_name,
+                "unit_price": float(i.unit_price),
+                "quantity": i.quantity,
+                "added_at": i.added_at.isoformat() if i.added_at else None,
+            }
+            for i in items
+        ],
+        "total": round(total, 2),
+    })
+
+
+@app.post("/api/v1/tabs", status_code=201)
+async def api_v1_open_tab(
+    body: OpenTabRequest,
+    auth: dict = Depends(verify_api_key),
+    db: AsyncSession = Depends(get_db),
+):
+    """Open a new tab for a table. Creates a pos_sessions row tracking the terminal."""
+    shop_id = auth.get("shop_id")
+    if not shop_id:
+        raise HTTPException(status_code=400, detail="No shop configured")
+
+    # Verify table exists and belongs to this shop
+    result = await db.execute(
+        select(Table).where(Table.id == body.table_id, Table.shop_id == shop_id)
+    )
+    table = result.scalar_one_or_none()
+    if not table:
+        raise HTTPException(status_code=404, detail="Table not found")
+
+    # Check no open tab already exists for this table
+    result = await db.execute(
+        select(Tab).where(
+            Tab.table_id == body.table_id,
+            Tab.shop_id == shop_id,
+            Tab.status == "open",
+        )
+    )
+    existing_tab = result.scalar_one_or_none()
+    if existing_tab:
+        raise HTTPException(status_code=409, detail="Table already has an open tab")
+
+    # Create tab
+    tab = Tab(
+        table_id=body.table_id,
+        shop_id=shop_id,
+        status="open",
+        guests=body.guests,
+        notes=body.notes or None,
+        pos_terminal_id=body.pos_terminal_id,
+    )
+    db.add(tab)
+    await db.flush()
+
+    # Create pos_sessions row
+    session = PosSession(
+        shop_id=shop_id,
+        pos_terminal_id=body.pos_terminal_id,
+        staff_id=body.staff_id,
+        opened_tab_ids=[tab.id],
+    )
+    db.add(session)
+    await db.commit()
+    await db.refresh(tab)
+
+    return JSONResponse({
+        "id": tab.id,
+        "table_id": tab.table_id,
+        "status": tab.status,
+        "guests": tab.guests,
+        "opened_at": tab.opened_at.isoformat() if tab.opened_at else None,
+        "pos_session_id": session.id,
+    }, status_code=201)
+
+
+@app.post("/api/v1/tabs/{tab_id}/items", status_code=201)
+async def api_v1_add_item(
+    tab_id: int,
+    body: AddItemRequest,
+    auth: dict = Depends(verify_api_key),
+    db: AsyncSession = Depends(get_db),
+):
+    """Add an item to a tab. Merges with existing line of same product + price."""
+    # Verify tab exists and is open
+    result = await db.execute(select(Tab).where(Tab.id == tab_id, Tab.status == "open"))
+    tab = result.scalar_one_or_none()
+    if not tab:
+        raise HTTPException(status_code=404, detail="Tab not found or not open")
+
+    # Get product
+    result = await db.execute(select(Product).where(Product.id == body.product_id))
+    product = result.scalar_one_or_none()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    # Check for price override
+    ov_result = await db.execute(
+        select(PriceOverride).where(
+            PriceOverride.product_id == body.product_id,
+            PriceOverride.is_active == True,
+        )
+    )
+    override = ov_result.scalar_one_or_none()
+    unit_price = override.override_price if override else product.price
+
+    # Merge with existing line item of same product AND same price
+    existing_res = await db.execute(
+        select(TabItem).where(
+            TabItem.tab_id == tab_id,
+            TabItem.product_id == body.product_id,
+            TabItem.unit_price == unit_price,
+        )
+    )
+    existing = existing_res.scalar_one_or_none()
+
+    if existing:
+        existing.quantity += 1
+    else:
+        item = TabItem(
+            tab_id=tab_id,
+            product_id=body.product_id,
+            product_name=product.name,
+            unit_price=unit_price,
+            quantity=1,
+        )
+        db.add(item)
+
+    await db.commit()
+
+    # Return updated items list
+    items_res = await db.execute(
+        select(TabItem).where(TabItem.tab_id == tab_id).order_by(TabItem.added_at)
+    )
+    items = items_res.scalars().all()
+    total = sum(float(i.unit_price) * i.quantity for i in items)
+
+    return JSONResponse({
+        "items": [
+            {
+                "id": i.id,
+                "product_id": i.product_id,
+                "product_name": i.product_name,
+                "unit_price": float(i.unit_price),
+                "quantity": i.quantity,
+                "added_at": i.added_at.isoformat() if i.added_at else None,
+            }
+            for i in items
+        ],
+        "total": round(total, 2),
+    }, status_code=201)
+
+
+@app.delete("/api/v1/tabs/{tab_id}/items/{item_id}")
+async def api_v1_delete_item(
+    tab_id: int,
+    item_id: int,
+    auth: dict = Depends(verify_api_key),
+    db: AsyncSession = Depends(get_db),
+):
+    """Remove an item from a tab."""
+    result = await db.execute(
+        select(TabItem).where(TabItem.id == item_id, TabItem.tab_id == tab_id)
+    )
+    item = result.scalar_one_or_none()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    await db.delete(item)
+    await db.commit()
+
+    # Return updated items list
+    items_res = await db.execute(
+        select(TabItem).where(TabItem.tab_id == tab_id).order_by(TabItem.added_at)
+    )
+    items = items_res.scalars().all()
+    total = sum(float(i.unit_price) * i.quantity for i in items)
+
+    return JSONResponse({
+        "items": [
+            {
+                "id": i.id,
+                "product_id": i.product_id,
+                "product_name": i.product_name,
+                "unit_price": float(i.unit_price),
+                "quantity": i.quantity,
+            }
+            for i in items
+        ],
+        "total": round(total, 2),
+    })
+
+
+@app.patch("/api/v1/tabs/{tab_id}/items/{item_id}")
+async def api_v1_update_item_qty(
+    tab_id: int,
+    item_id: int,
+    body: UpdateItemQtyRequest,
+    auth: dict = Depends(verify_api_key),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update item quantity. If quantity <= 0, removes the item."""
+    result = await db.execute(
+        select(TabItem).where(TabItem.id == item_id, TabItem.tab_id == tab_id)
+    )
+    item = result.scalar_one_or_none()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    if body.quantity <= 0:
+        await db.delete(item)
+    else:
+        item.quantity = body.quantity
+
+    await db.commit()
+
+    # Return updated items list
+    items_res = await db.execute(
+        select(TabItem).where(TabItem.tab_id == tab_id).order_by(TabItem.added_at)
+    )
+    items = items_res.scalars().all()
+    total = sum(float(i.unit_price) * i.quantity for i in items)
+
+    return JSONResponse({
+        "items": [
+            {
+                "id": i.id,
+                "product_id": i.product_id,
+                "product_name": i.product_name,
+                "unit_price": float(i.unit_price),
+                "quantity": i.quantity,
+            }
+            for i in items
+        ],
+        "total": round(total, 2),
+    })
+
+
+@app.post("/api/v1/tabs/{tab_id}/close")
+async def api_v1_close_tab(
+    tab_id: int,
+    body: CloseTabRequest | None = None,
+    auth: dict = Depends(verify_api_key),
+    db: AsyncSession = Depends(get_db),
+):
+    """Close a tab (after POS checkout completes)."""
+    result = await db.execute(select(Tab).where(Tab.id == tab_id))
+    tab = result.scalar_one_or_none()
+    if not tab:
+        raise HTTPException(status_code=404, detail="Tab not found")
+
+    if tab.status == "closed":
+        raise HTTPException(status_code=400, detail="Tab already closed")
+
+    tab.status = "closed"
+    tab.closed_at = datetime.now(timezone.utc)
+    if body and body.pos_terminal_id:
+        tab.pos_terminal_id = body.pos_terminal_id
+
+    await db.commit()
+
+    return JSONResponse({
+        "id": tab.id,
+        "table_id": tab.table_id,
+        "status": tab.status,
+        "closed_at": tab.closed_at.isoformat() if tab.closed_at else None,
+    })
+
+
+# ─── Send to Cart ───
+
+class SendToCartRequest(BaseModel):
+    pos_terminal_id: str | None = None
+    staff_id: str | None = None
+
+
+@app.post("/api/v1/tabs/{tab_id}/send-to-cart")
+async def api_v1_send_to_cart(
+    tab_id: int,
+    body: SendToCartRequest | None = None,
+    auth: dict = Depends(verify_api_key),
+    db: AsyncSession = Depends(get_db),
+):
+    """Record a tab as sent to the POS cart.
+    Creates a Transaction record (does NOT call Shopify — that's client-side).
+    """
+    # Get tab + items
+    result = await db.execute(select(Tab).where(Tab.id == tab_id))
+    tab = result.scalar_one_or_none()
+    if not tab:
+        raise HTTPException(status_code=404, detail="Tab not found")
+
+    # Prevent double-send
+    if tab.status == "sent":
+        raise HTTPException(status_code=400, detail="Tab already sent")
+    if tab.status == "closed":
+        raise HTTPException(status_code=400, detail="Tab is closed")
+
+    result = await db.execute(
+        select(TabItem).where(TabItem.tab_id == tab_id).order_by(TabItem.added_at)
+    )
+    items = result.scalars().all()
+
+    if not items:
+        raise HTTPException(status_code=400, detail="Cannot send empty tab")
+
+    # Calculate totals
+    total = sum(float(item.unit_price) * item.quantity for item in items)
+    item_count = sum(item.quantity for item in items)
+
+    # Get table name
+    table_name = None
+    table_id = None
+    if tab.table_id:
+        tbl_res = await db.execute(select(Table).where(Table.id == tab.table_id))
+        tbl = tbl_res.scalar_one_or_none()
+        if tbl:
+            table_name = tbl.name
+            table_id = tbl.id
+
+    # Get shop name
+    shop_name = None
+    shop_res = await db.execute(select(Shop).where(Shop.id == tab.shop_id))
+    shop_obj = shop_res.scalar_one_or_none()
+    if shop_obj:
+        shop_name = shop_obj.name
+
+    pos_terminal_id = body.pos_terminal_id if body else None
+
+    # Build and persist transaction
+    from decimal import Decimal as D
+
+    tx = Transaction(
+        tab_id=tab.id,
+        table_id=table_id,
+        table_name=table_name,
+        shop_id=tab.shop_id,
+        shop_name=shop_name,
+        guest_count=tab.guests,
+        total_amount=D(str(round(total, 2))),
+        currency="EUR",
+        item_count=item_count,
+        checkout_method="pos_extension",
+        pos_terminal_id=pos_terminal_id,
+        opened_at=tab.opened_at,
+        sent_at=datetime.now(timezone.utc),
+        notes=tab.notes,
+    )
+    db.add(tx)
+    await db.flush()  # get tx.id
+
+    # Snapshot line items
+    for idx, item in enumerate(items):
+        # Get product for variant ID and override info
+        product = None
+        if item.product_id:
+            pres = await db.execute(select(Product).where(Product.id == item.product_id))
+            product = pres.scalar_one_or_none()
+
+        checkout_variant = product.shopify_variant_id if product else None
+        checkout_name = item.product_name
+        flavor_note = None
+
+        if product:
+            ov_res = await db.execute(
+                select(PriceOverride).where(
+                    PriceOverride.product_id == product.id,
+                    PriceOverride.is_active == True,
+                )
+            )
+            ov = ov_res.scalar_one_or_none()
+            if ov:
+                if ov.checkout_variant_id:
+                    checkout_variant = ov.checkout_variant_id
+                if ov.checkout_product_name:
+                    checkout_name = ov.checkout_product_name
+                if checkout_name != item.product_name:
+                    flavor_note = item.product_name
+
+        line_total = D(str(item.unit_price)) * item.quantity
+        tx_item = TransactionItem(
+            transaction_id=tx.id,
+            product_id=item.product_id,
+            product_name=item.product_name,
+            checkout_name=checkout_name,
+            unit_price=D(str(item.unit_price)),
+            quantity=item.quantity,
+            line_total=line_total,
+            flavor=flavor_note,
+            shopify_variant_id=checkout_variant,
+            sort_order=idx,
+        )
+        db.add(tx_item)
+
+    # Update tab status
+    tab.status = "sent"
+    tab.pos_cart_sent_at = datetime.now(timezone.utc)
+    if pos_terminal_id:
+        tab.pos_terminal_id = pos_terminal_id
+
+    await db.commit()
+
+    return JSONResponse({
+        "transaction_id": tx.id,
+        "tab_id": tab.id,
+        "status": tab.status,
+        "total": round(total, 2),
+        "item_count": item_count,
+    })
 
 
 

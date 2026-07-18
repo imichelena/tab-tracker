@@ -28,3 +28,9 @@ SHOPIFY_CLIENT_ID = os.environ.get("SHOPIFY_CLIENT_ID", "")
 SHOPIFY_CLIENT_SECRET = os.environ.get("SHOPIFY_CLIENT_SECRET", "")
 
 APP_PORT = int(os.environ.get("TAB_TRACKER_PORT", "8095"))
+
+# POS Extension config
+TAB_TRACKER_API_KEY = os.environ.get("TAB_TRACKER_API_KEY", "pos-extension-pilot-key-2026")
+POS_EXTENSION_ORIGIN = os.environ.get("POS_EXTENSION_ORIGIN", "*")
+CHECKOUT_METHOD = os.environ.get("CHECKOUT_METHOD", "pos_extension")  # pos_extension | draft_order
+SHOPIFY_SESSION_SECRET = os.environ.get("SHOPIFY_SESSION_SECRET", "")

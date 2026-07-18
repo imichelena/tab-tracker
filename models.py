@@ -90,6 +90,10 @@ class Tab(Base):
     sent_at = Column(DateTime(timezone=True))
     notes = Column(Text)
 
+    # POS Extension columns
+    pos_cart_sent_at = Column(DateTime(timezone=True))
+    pos_terminal_id = Column(String(100))
+
 
 class TabItem(Base):
     __tablename__ = "tab_items"
@@ -136,6 +140,20 @@ class PriceOverride(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
+class PosSession(Base):
+    """Tracks which POS terminal opened which tab, for audit and multi-terminal support."""
+    __tablename__ = "pos_sessions"
+    __table_args__ = {"schema": "tab_tracker"}
+
+    id = Column(Integer, primary_key=True)
+    shop_id = Column(Integer, ForeignKey("tab_tracker.shops.id"))
+    pos_terminal_id = Column(String(100))         # Shopify device ID
+    staff_id = Column(String(100))                # Shopify staff ID
+    opened_tab_ids = Column(JSON)                 # Array of currently open tab IDs
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 class Transaction(Base):
     """Permanent record of a completed/sent tab — the business transaction.
     Created when a tab is sent to Shopify. Survives tab deletion."""
@@ -160,6 +178,11 @@ class Transaction(Base):
     # Shopify link
     shopify_draft_order_id = Column(String(100))
     shopify_status = Column(String(20), default="sent")  # sent, completed, voided
+
+    # POS Extension fields
+    pos_order_id = Column(String(100))
+    pos_terminal_id = Column(String(100))
+    checkout_method = Column(String(20), default="pos_extension")  # pos_extension | draft_order (legacy)
 
     # Timing
     opened_at = Column(DateTime(timezone=True))  # when tab was opened

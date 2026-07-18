@@ -1,0 +1,35 @@
+/**
+ * Tab Tracker POS Extension — custom styles.
+ *
+ * Shopify POS UI extensions use web components with limited styling capability.
+ * Most layout and spacing is handled via component props (Box, Stack, etc).
+ * This file provides minor overrides for edge cases.
+ */
+
+/* Ensure the extension fills the modal container */
+#tab-tracker-root {
+  width: 100%;
+  height: 100%;
+}
+
+/* Product grid inline wrapping */
+.product-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* Tab bill line items */
+.tab-bill-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+/* Category bar horizontal scroll */
+.category-bar {
+  overflow-x: auto;
+  white-space: nowrap;
+  padding: 4px 0;
+}
