@@ -17,10 +17,14 @@ SYNC_DB_URL = os.environ.get(
 SECRET_KEY = os.environ.get("SECRET_KEY", "tab-tracker-poc-secret-change-me")
 SESSION_COOKIE_NAME = "tabtracker_session"
 
-# Shopify config (mock for POC, real values set later)
+# Shopify config
 SHOPIFY_STORE_DOMAIN = os.environ.get("SHOPIFY_STORE_DOMAIN", "")
 SHOPIFY_ADMIN_TOKEN = os.environ.get("SHOPIFY_ADMIN_TOKEN", "")
 SHOPIFY_LOCATION_ID = os.environ.get("SHOPIFY_LOCATION_ID", "")
 SHOPIFY_MOCK = os.environ.get("SHOPIFY_MOCK", "true").lower() == "true"
+
+# Shopify OAuth (tab_tracker2 Dev Dashboard app — client_credentials grant)
+SHOPIFY_CLIENT_ID = os.environ.get("SHOPIFY_CLIENT_ID", "")
+SHOPIFY_CLIENT_SECRET = os.environ.get("SHOPIFY_CLIENT_SECRET", "")
 
 APP_PORT = int(os.environ.get("TAB_TRACKER_PORT", "8095"))

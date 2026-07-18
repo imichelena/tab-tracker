@@ -20,6 +20,7 @@
     </div>
     <div class="topbar-right">
         <span class="user-name">{{ user.display_name }}</span>
+        <a href="/history">📊</a>
         <a href="/admin">⚙️</a>
         <form method="post" action="/logout" style="display:inline">
             <button type="submit">Exit</button>
@@ -50,12 +51,12 @@
                     <div class="product-tile" data-product-name="{{ product.name|lower }}"
                          onclick="addItem({{ active_tab.id if active_tab else 'null' }}, {{ product.id }})">
                         {% if product.image_path %}
-                        <img src="/static{{ product.image_path }}" alt="{{ product.name }}" loading="lazy">
+                        <img src="{{ product.image_path }}" alt="{{ product.name }}" loading="lazy">
                         {% else %}
                         <div class="no-img">🍽️</div>
                         {% endif %}
                         <div class="p-name">{{ product.name }}</div>
-                        <div class="p-price">€{{ '%.2f'|format(product.price) }}</div>
+                        <div class="p-price">€{{ "%.2f"|format(overrides[product.id].override_price if product.id in overrides else product.price) }}</div>
                     </div>
                     {% endfor %}
                 </div>

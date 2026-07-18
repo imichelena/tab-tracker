@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Transaction History — Tab Tracker</title>
+    <style>
+        *{margin:0;padding:0;box-sizing:border-box}
+        body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f5f5f5;color:#222}
+        .history-page{padding:20px;max-width:1200px;margin:0 auto}
+        .history-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px}
+        .history-header h1{font-size:22px;color:#2c1810}
+        .header-actions{display:flex;gap:8px}
+        .btn{padding:10px 18px;border-radius:8px;font-size:14px;font-weight:600;text-decoration:none;cursor:pointer;border:none}
+        .btn-primary{background:#e89537;color:#fff}
+        .btn-primary:active{background:#d4822b}
+        .btn-secondary{background:#2196f3;color:#fff}
+        .btn-secondary:active{background:#1976d2}
+        .btn-green{background:#4caf50;color:#fff}
+        .btn-green:active{background:#388e3c}
+
+        /* Filters */
+        .filters{display:flex;gap:12px;margin-bottom:20px;flex-wrap:wrap;align-items:flex-end}
+        .filter-group{display:flex;flex-direction:column;gap:4px}
+        .filter-group label{font-size:12px;color:#888;font-weight:600;text-transform:uppercase}
+        .filter-group input,.filter-group select{padding:8px 12px;border:1px solid #ddd;border-radius:6px;font-size:14px;outline:none}
+        .filter-group input:focus,.filter-group select:focus{border-color:#e89537}
+
+        /* Summary cards */
+        .summary-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px;margin-bottom:20px}
+        .summary-card{background:#fff;border:1px solid #e0e0e0;border-radius:10px;padding:16px;text-align:center}
+        .summary-card .value{font-size:24px;font-weight:800;color:#2c1810}
+        .summary-card .label{font-size:12px;color:#888;margin-top:4px}
+
+        /* Table */
+        .table-wrapper{background:#fff;border:1px solid #e0e0e0;border-radius:10px;overflow-x:auto;margin-bottom:20px}
+        table{width:100%;border-collapse:collapse;font-size:13px}
+        th{text-align:left;padding:10px 12px;border-bottom:2px solid #e0e0e0;color:#666;font-size:11px;text-transform:uppercase;white-space:nowrap}
+        td{padding:10px 12px;border-bottom:1px solid #f0f0f0;vertical-align:top}
+        tr:hover{background:#fafafa}
+        .tx-id{font-family:monospace;font-size:12px;color:#888}
+        .tx-table{font-weight:700}
+        .tx-total{font-weight:700;color:#2c1810}
+        .tx-status{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600}
+        .status-sent{background:#fff3cd;color:#856404}
+        .status-completed{background:#d4edda;color:#155724}
+        .status-open{background:#e3f2fd;color:#1565c0}
+        .item-list{font-size:12px;color:#555;line-height:1.5}
+        .item-list .flavor{color:#888;font-style:italic}
+        .expand-btn{background:none;border:1px solid #ddd;border-radius:4px;padding:4px 8px;font-size:12px;cursor:pointer}
+        .expand-btn:active{background:#eee}
+
+        /* Pagination */
+        .pagination{display:flex;justify-content:center;gap:8px;margin-top:16px}
+        .pagination a{padding:8px 14px;border:1px solid #ddd;border-radius:6px;text-decoration:none;color:#333;font-size:14px}
+        .pagination a.active{background:#e89537;color:#fff;border-color:#e89537}
+        .pagination a:hover:not(.active){background:#f5f5f5}
+
+        .empty{text-align:center;padding:40px;color:#aaa;font-size:16px}
+
+        /* API info box */
+        .api-box{background:#f8f9fa;border:1px solid #e0e0e0;border-radius:8px;padding:16px;margin-bottom:20px}
+        .api-box h3{font-size:14px;color:#333;margin-bottom:8px}
+        .api-box code{font-size:12px;background:#e8e8e8;padding:2px 6px;border-radius:3px;word-break:break-all}
+        .api-box .endpoint{margin:6px 0;font-size:13px}
+    </style>
+</head>
+<body>
+<div class="history-page">
+    <div class="history-header">
+        <h1>📊 Transaction History</h1>
+        <div class="header-actions">
+            <a href="/" class="btn btn-primary">🏠 Floor</a>
+            <a href="/admin" class="btn btn-secondary">⚙️ Admin</a>
+            <a href="/exports/transactions.csv" class="btn btn-green">📥 Export CSV</a>
+        </div>
+    </div>
+
+    <!-- Summary -->
+    <div class="summary-cards">
+        <div class="summary-card">
+            <div class="value">{{ total_transactions }}</div>
+            <div class="label">Transactions</div>
+        </div>
+        <div class="summary-card">
+            <div class="value">€{{ total_revenue | default(0) | round(2) }}</div>
+            <div class="label">Total Revenue</div>
+        </div>
+        <div class="summary-card">
+            <div class="value">{{ total_items }}</div>
+            <div class="label">Items Sold</div>
+        </div>
+        <div class="summary-card">
+            <div class="value">{{ avg_transaction | default(0) | round(2) }}</div>
+            <div class="label">Avg Transaction (€)</div>
+        </div>
+    </div>
+
+    <!-- Filters -->
+    <form method="get" action="/history" class="filters">
+        <div class="filter-group">
+            <label>From</label>
+            <input type="date" name="from_date" value="{{ from_date or '' }}">
+        </div>
+        <div class="filter-group">
+            <label>To</label>
+            <input type="date" name="to_date" value="{{ to_date or '' }}">
+        </div>
+        <div class="filter-group">
+            <label>Status</label>
+            <select name="status">
+                <option value="">All</option>
+                <option value="sent" {{ 'selected' if status_filter == 'sent' }}>Sent</option>
+                <option value="completed" {{ 'selected' if status_filter == 'completed' }}>Completed</option>
+                <option value="open" {{ 'selected' if status_filter == 'open' }}>Open</option>
+                <option value="voided" {{ 'selected' if status_filter == 'voided' }}>Voided</option>
+            </select>
+        </div>
+        <div class="filter-group">
+            <label>Table</label>
+            <select name="table_id">
+                <option value="">All tables</option>
+                {% for t in all_tables %}
+                <option value="{{ t.id }}" {{ 'selected' if t.id == table_filter }}>{{ t.name }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="filter-group">
+            <label>&nbsp;</label>
+            <button type="submit" class="btn btn-primary">Filter</button>
+        </div>
+        <div class="filter-group">
+            <label>&nbsp;</label>
+            <a href="/history" class="btn btn-secondary">Clear</a>
+        </div>
+    </form>
+
+    <!-- API info -->
+    <div class="api-box">
+        <h3>🔌 API Access for Dashboards</h3>
+        <div class="endpoint">JSON: <code>GET /api/v1/transactions?api_key=YOUR_KEY&from_date=2026-07-01&to_date=2026-07-31</code></div>
+        <div class="endpoint">CSV: <code>GET /exports/transactions.csv?api_key=YOUR_KEY</code></div>
+        <div class="endpoint">Single: <code>GET /api/v1/transactions/{{ '{id}' }}?api_key=YOUR_KEY</code></div>
+    </div>
+
+    <!-- Transaction table -->
+    {% if transactions %}
+    <div class="table-wrapper">
+        <table>
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Date</th>
+                    <th>Table</th>
+                    <th>Items</th>
+                    <th>Cashier</th>
+                    <th>Guests</th>
+                    <th>Status</th>
+                    <th>Shopify</th>
+                    <th>Total</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for tx in transactions %}
+                <tr>
+                    <td class="tx-id">#{{ tx.id }}</td>
+                    <td>{{ tx.sent_at.strftime('%d-%m-%Y %H:%M') if tx.sent_at else '—' }}</td>
+                    <td class="tx-table">{{ tx.table_name or '—' }}</td>
+                    <td>
+                        <div class="item-list">
+                        {% for item in tx.items %}
+                            <div>{{ item.quantity }}× {{ item.product_name }}
+                                {% if item.flavor %} <span class="flavor">({{ item.flavor }})</span>{% endif %}
+                            </div>
+                        {% endfor %}
+                        </div>
+                    </td>
+                    <td>{{ tx.cashier_name or '—' }}</td>
+                    <td>{{ tx.guest_count or 1 }}</td>
+                    <td>
+                        <span class="tx-status status-{{ tx.shopify_status }}">{{ tx.shopify_status }}</span>
+                    </td>
+                    <td class="tx-id">
+                        {% if tx.shopify_draft_order_id %}
+                            {{ tx.shopify_draft_order_id[:12] }}…
+                        {% else %}
+                            —
+                        {% endif %}
+                    </td>
+                    <td class="tx-total">€{{ "%.2f"|format(tx.total_amount) }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Pagination -->
+    {% if total_pages > 1 %}
+    <div class="pagination">
+        {% if page > 1 %}
+        <a href="/history?page={{ page - 1 }}&from_date={{ from_date }}&to_date={{ to_date }}&status={{ status_filter }}&table_id={{ table_filter }}">← Prev</a>
+        {% endif %}
+        {% for p in range(1, total_pages + 1) %}
+        <a href="/history?page={{ p }}&from_date={{ from_date }}&to_date={{ to_date }}&status={{ status_filter }}&table_id={{ table_filter }}" class="{{ 'active' if p == page }}">{{ p }}</a>
+        {% endfor %}
+        {% if page < total_pages %}
+        <a href="/history?page={{ page + 1 }}&from_date={{ from_date }}&to_date={{ to_date }}&status={{ status_filter }}&table_id={{ table_filter }}">Next →</a>
+        {% endif %}
+    </div>
+    {% endif %}
+
+    {% else %}
+    <div class="empty">No transactions found. Send a tab to Shopify to create one.</div>
+    {% endif %}
+</div>
+</body>
+</html>

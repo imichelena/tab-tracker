@@ -1,23 +1,69 @@
 """
 Shopify integration layer.
-- Mock mode: simulates draft order creation, returns fake order ID
-- Real mode: calls Shopify Admin API to create draft orders tagged as POS sale
+Uses client_credentials OAuth flow on tab_tracker2 (Dev Dashboard app)
+to get a fresh access token with write_draft_orders scope every 24h.
 
-When SHOPIFY_MOCK=true, all operations are simulated.
-To go live: set SHOPIFY_STORE_DOMAIN, SHOPIFY_ADMIN_TOKEN, SHOPIFY_LOCATION_ID
-and SHOPIFY_MOCK=false in the environment.
+Token auto-refreshes when expired or missing.
 """
-import json
+import time
 import logging
-from datetime import datetime
+import httpx
 from config import (
     SHOPIFY_STORE_DOMAIN,
-    SHOPIFY_ADMIN_TOKEN,
+    SHOPIFY_ADMIN_TOKEN,  # fallback old token (read-only)
     SHOPIFY_LOCATION_ID,
     SHOPIFY_MOCK,
+    SHOPIFY_CLIENT_ID,
+    SHOPIFY_CLIENT_SECRET,
 )
 
 logger = logging.getLogger("tabtracker.shopify")
+
+# Cached token
+_cached_token: str | None = None
+_token_expires: float = 0.0
+
+
+async def get_access_token() -> str:
+    """
+    Get a valid Shopify access token via client_credentials grant.
+    Caches the token and refreshes when within 5 minutes of expiry.
+    """
+    global _cached_token, _token_expires
+
+    # Return cached token if still valid (5 min buffer)
+    if _cached_token and time.time() < (_token_expires - 300):
+        return _cached_token
+
+    if SHOPIFY_MOCK or not SHOPIFY_CLIENT_ID:
+        # Fallback to old static token (read-only, no draft orders)
+        if SHOPIFY_ADMIN_TOKEN:
+            return SHOPIFY_ADMIN_TOKEN
+        raise RuntimeError("No Shopify credentials configured")
+
+    # Exchange via client_credentials (form-encoded, NOT JSON)
+    url = f"https://{SHOPIFY_STORE_DOMAIN}/admin/oauth/access_token"
+    data = {
+        "client_id": SHOPIFY_CLIENT_ID,
+        "client_secret": SHOPIFY_CLIENT_SECRET,
+        "grant_type": "client_credentials",
+    }
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(url, data=data)  # form-encoded
+        if resp.status_code == 200:
+            result = resp.json()
+            _cached_token = result["access_token"]
+            _token_expires = time.time() + result.get("expires_in", 86399)
+            logger.info(f"Shopify token refreshed, expires in {result.get('expires_in', 86399)}s")
+            return _cached_token
+        else:
+            logger.error(f"Token exchange failed: {resp.status_code} {resp.text}")
+            # Fallback to old token (read-only)
+            if SHOPIFY_ADMIN_TOKEN:
+                logger.warning("Falling back to static token (read-only, no draft orders)")
+                return SHOPIFY_ADMIN_TOKEN
+            raise RuntimeError(f"Shopify token exchange failed: {resp.text}")
 
 
 async def create_draft_order(tab_id: int, items: list[dict], total: float) -> dict:
@@ -32,8 +78,7 @@ async def create_draft_order(tab_id: int, items: list[dict], total: float) -> di
     Returns:
         {"success": bool, "draft_order_id": str, "admin_url": str, "error": str|None}
     """
-    if SHOPIFY_MOCK or not SHOPIFY_ADMIN_TOKEN:
-        # Mock: generate a fake but realistic-looking response
+    if SHOPIFY_MOCK:
         fake_id = f"gid://shopify/DraftOrder/{10_000_000 + tab_id}"
         logger.info(f"[MOCK] Draft order created for tab {tab_id}, total {total:.2f} EUR, {len(items)} line items")
         return {
@@ -44,9 +89,19 @@ async def create_draft_order(tab_id: int, items: list[dict], total: float) -> di
             "mock": True,
         }
 
-    # Real Shopify Admin API call
-    import httpx
+    # Get fresh token
+    try:
+        token = await get_access_token()
+    except Exception as e:
+        return {
+            "success": False,
+            "draft_order_id": None,
+            "admin_url": None,
+            "error": f"Token error: {e}",
+            "mock": False,
+        }
 
+    # Build line items
     line_items = []
     for item in items:
         line_item = {
@@ -56,6 +111,9 @@ async def create_draft_order(tab_id: int, items: list[dict], total: float) -> di
         }
         if item.get("shopify_variant_id"):
             line_item["variant_id"] = item["shopify_variant_id"]
+        # Pass flavor info as line item properties (visible in Shopify order)
+        if item.get("properties"):
+            line_item["properties"] = item["properties"]
         line_items.append(line_item)
 
     payload = {
@@ -63,13 +121,12 @@ async def create_draft_order(tab_id: int, items: list[dict], total: float) -> di
             "line_items": line_items,
             "tags": "POS, in-store, tab-tracker",
             "note": f"Tab #{tab_id} - Created by Tab Tracker",
-            "inventory_location_id": SHOPIFY_LOCATION_ID if SHOPIFY_LOCATION_ID else None,
         }
     }
 
     url = f"https://{SHOPIFY_STORE_DOMAIN}/admin/api/2024-10/draft_orders.json"
     headers = {
-        "X-Shopify-Access-Token": SHOPIFY_ADMIN_TOKEN,
+        "X-Shopify-Access-Token": token,
         "Content-Type": "application/json",
     }
 
@@ -111,9 +168,6 @@ async def create_draft_order(tab_id: int, items: list[dict], total: float) -> di
 async def sync_products() -> dict:
     """
     Sync products from Shopify Admin API.
-    Returns list of products with variant IDs, prices, images.
-
-    In mock mode, returns empty list (use seed data instead).
     """
     if SHOPIFY_MOCK or not SHOPIFY_ADMIN_TOKEN:
         logger.info("[MOCK] Product sync requested — returning empty (use seed data)")
@@ -124,12 +178,13 @@ async def sync_products() -> dict:
             "mock": True,
         }
 
-    import httpx
+    try:
+        token = await get_access_token()
+    except Exception as e:
+        return {"success": False, "products": [], "message": str(e), "mock": False}
 
     url = f"https://{SHOPIFY_STORE_DOMAIN}/admin/api/2024-10/products.json?limit=250"
-    headers = {
-        "X-Shopify-Access-Token": SHOPIFY_ADMIN_TOKEN,
-    }
+    headers = {"X-Shopify-Access-Token": token}
 
     try:
         async with httpx.AsyncClient(timeout=30) as client:
@@ -140,13 +195,17 @@ async def sync_products() -> dict:
                 products = []
                 for p in data.get("products", []):
                     for variant in p.get("variants", []):
+                        img_url = None
+                        if p.get("images"):
+                            img_url = p["images"][0].get("src")
                         products.append({
                             "shopify_product_id": str(p["id"]),
                             "shopify_variant_id": str(variant["id"]),
                             "name": p["title"],
                             "price": float(variant["price"]),
                             "slug": p.get("handle", ""),
-                            "image_url": p.get("image", {}).get("src") if p.get("image") else None,
+                            "product_type": p.get("product_type", ""),
+                            "image_url": img_url,
                         })
                 return {"success": True, "products": products, "message": None, "mock": False}
             else:
