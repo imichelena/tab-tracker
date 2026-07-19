@@ -230,6 +230,9 @@ The following items are documented in full in the [Security Audit Report](docs/S
 For full evidence and remediation guidance, see:
 - [docs/SECURITY_REPORT.md](docs/SECURITY_REPORT.md) — 17 findings including SEC-001 (Critical, now fixed), SEC-003, SEC-007, SEC-008 (now fixed), SEC-010
 - [docs/QA_REPORT.md](docs/QA_REPORT.md) — Test case matrix, pass/fail breakdown, acceptance criteria
+- [docs/STATUS.md](docs/STATUS.md) — Current build state, verified/not-verified tables, gate verdicts, production-readiness checklist
+- [docs/TESTING.md](docs/TESTING.md) — Live test plan: backend smoke tests, integration tests, end-to-end POS flow, rollback steps
+- [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) — Operational gotchas: port conflicts, CORS, Cart API quirks, migration details
 
 ---
 
